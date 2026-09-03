@@ -1,0 +1,11 @@
+{
+  "domain": "arbor",
+  "name": "Arbor",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://support.arbor-education.com",
+  "iot_class": "cloud_polling",
+  "integration_type": "hub",
+  "requirements": [],
+  "codeowners": []
+}

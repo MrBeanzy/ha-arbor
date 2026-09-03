@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Arbor",
+        "description": "Enter your school's Arbor address and your guardian login. Credentials are stored only in Home Assistant.",
+        "data": {
+          "base_url": "School Arbor URL",
+          "username": "Username or email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Login failed - check your username/email and password.",
+      "cannot_connect": "Couldn't reach Arbor or read the dashboard.",
+      "no_accounts": "Logged in, but no account balances were found on the dashboard."
+    },
+    "abort": {
+      "already_configured": "This Arbor login is already set up."
+    }
+  }
+}
