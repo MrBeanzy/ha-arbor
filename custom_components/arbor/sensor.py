@@ -59,6 +59,10 @@ async def async_setup_entry(
             if uid not in known:
                 known.add(uid)
                 new.append(ArborNoticesSensor(coordinator, sid, name))
+            uid = f"arbor_{sid}_timetable"
+            if uid not in known:
+                known.add(uid)
+                new.append(ArborTimetableSensor(coordinator, sid, name))
 
         for aid, acc in (data.get("accounts", {}) or {}).items():
             uid = f"arbor_{aid}"
@@ -135,6 +139,23 @@ class ArborNoticesSensor(_StudentBase):
     @property
     def extra_state_attributes(self) -> dict:
         return {"notices": self._sdata().get("notices") or []}
+
+
+class ArborTimetableSensor(_StudentBase):
+    _attr_icon = "mdi:timetable"
+
+    def __init__(self, coordinator, sid, sname) -> None:
+        super().__init__(coordinator, sid, sname)
+        self._attr_unique_id = f"arbor_{sid}_timetable"
+        self._attr_name = f"{sname} Timetable"
+
+    @property
+    def native_value(self) -> int:
+        return len(self._sdata().get("timetable") or [])
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {"lessons": self._sdata().get("timetable") or []}
 
 
 class ArborBalanceSensor(CoordinatorEntity, SensorEntity):

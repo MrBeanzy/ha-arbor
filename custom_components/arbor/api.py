@@ -120,6 +120,13 @@ class ArborApi:
                 entry.update(self._kpis(kdata))
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("Arbor student %s kpis failed: %s", sid, err)
+            try:
+                cal = await self._get_json(
+                    f"/guardians/widget-data/get-calendar-data/student-id/{sid}/"
+                )
+                entry["timetable"] = self._timetable(cal)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Arbor student %s timetable failed: %s", sid, err)
             result["students"][sid] = entry
         return result
 
@@ -228,4 +235,27 @@ class ArborApi:
                 out["negative_incidents"] = val
             elif "neutral behav" in title:
                 out["neutral_incidents"] = val
+        return out
+
+    @staticmethod
+    def _timetable(cal) -> list:
+        out: list = []
+        for item in (cal.get("items") or []):
+            fields = item.get("fields", {}) or {}
+            start = str((fields.get("start_datetime", {}) or {}).get("value", ""))
+            end = str((fields.get("end_datetime", {}) or {}).get("value", ""))
+            title = str((fields.get("title", {}) or {}).get("value", ""))
+            room = str((fields.get("location", {}) or {}).get("value", ""))
+            st = start[11:16] if len(start) >= 16 else ""
+            et = end[11:16] if len(end) >= 16 else ""
+            out.append(
+                {
+                    "time": f"{st}-{et}" if st and et else (st or et),
+                    "start": st,
+                    "end": et,
+                    "subject": title.split(":")[0].strip() if title else title,
+                    "full": title,
+                    "room": room,
+                }
+            )
         return out
