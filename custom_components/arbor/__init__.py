@@ -34,14 +34,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _update() -> dict:
         try:
-            accounts = await api.get_balances()
+            return await api.get_data()
         except ArborAuthError as err:
             raise UpdateFailed(f"auth: {err}") from err
-        except ArborError as err:
-            raise UpdateFailed(str(err)) from err
         except Exception as err:  # noqa: BLE001
             raise UpdateFailed(str(err)) from err
-        return {a["account_id"]: a for a in accounts if a.get("account_id")}
 
     coordinator = DataUpdateCoordinator(
         hass,

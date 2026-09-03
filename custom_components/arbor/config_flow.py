@@ -32,13 +32,13 @@ class ArborConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input[CONF_PASSWORD],
             )
             try:
-                accounts = await api.get_balances()
+                data = await api.get_data()
             except ArborAuthError:
                 errors["base"] = "invalid_auth"
             except Exception:  # noqa: BLE001
                 errors["base"] = "cannot_connect"
             else:
-                if not accounts:
+                if not (data.get("accounts") or data.get("students")):
                     errors["base"] = "no_accounts"
                 else:
                     await self.async_set_unique_id(user_input[CONF_USERNAME].lower())

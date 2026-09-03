@@ -1,4 +1,4 @@
-"""Minimal Arbor guardian-portal client: log in and read account balances."""
+"""Arbor guardian-portal client: log in and read balances, attendance, behaviour, lessons, notices."""
 from __future__ import annotations
 
 import json
@@ -18,11 +18,28 @@ class ArborAuthError(Exception):
 
 
 class ArborError(Exception):
-    """Any other failure."""
+    """Any other failure (incl. session expiry)."""
+
+
+def _strip(html) -> str:
+    """Strip HTML tags and collapse whitespace."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(html or ""))).strip()
+
+
+def _walk(node, match):
+    """Yield every dict node in the tree for which match(node) is truthy."""
+    if isinstance(node, dict):
+        if match(node):
+            yield node
+        for value in node.values():
+            yield from _walk(value, match)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _walk(value, match)
 
 
 class ArborApi:
-    """Logs in with the guardian's credentials and scrapes the dashboard JSON."""
+    """Logs in with the guardian's credentials and scrapes the guardian portal."""
 
     def __init__(self, session, base_url: str, username: str, password: str) -> None:
         self._session = session
@@ -35,7 +52,7 @@ class ArborApi:
         return {
             "User-Agent": _UA,
             "X-Requested-With": "XMLHttpRequest",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept": "application/json, text/plain, */*; q=0.01",
         }
 
     async def _login(self) -> None:
@@ -63,51 +80,152 @@ class ArborApi:
             raise ArborAuthError(f"Arbor login failed (HTTP {resp.status}): {text[:160]}")
         self._logged_in = True
 
-    async def get_balances(self, _retry: bool = True) -> list[dict]:
-        """Return [{account_id, name, balance}] for every account with a balance."""
-        if not self._logged_in:
-            await self._login()
-        url = self._base + "/guardians/home-ui/dashboard?format=javascript"
+    async def _get_json(self, path: str):
+        url = self._base + path
         async with self._session.get(url, headers=self._headers()) as resp:
             status = resp.status
             text = await resp.text()
         if status in (401, 403) or text.lstrip().startswith("<"):
-            # Session expired / bounced to a login page -> re-auth once.
             self._logged_in = False
-            if _retry:
-                await self._login()
-                return await self.get_balances(_retry=False)
-            raise ArborError(f"Unexpected dashboard response (HTTP {status})")
+            raise ArborError(f"session expired at {path} (HTTP {status})")
+        return json.loads(text)
+
+    async def get_data(self, _retry: bool = True) -> dict:
+        """Return {'accounts': {...}, 'students': {sid: {...}}}."""
+        if not self._logged_in:
+            await self._login()
         try:
-            data = json.loads(text)
-        except ValueError as err:
-            raise ArborError(f"Dashboard was not JSON: {text[:120]}") from err
-        return self._extract(data)
+            dash = await self._get_json("/guardians/home-ui/dashboard?format=javascript")
+        except (ArborError, ValueError):
+            if _retry:
+                self._logged_in = False
+                await self._login()
+                return await self.get_data(_retry=False)
+            raise
+
+        result = {"accounts": self._accounts(dash), "students": {}}
+        for sid, sname in self._students(dash).items():
+            entry: dict = {"name": sname}
+            try:
+                sdash = await self._get_json(
+                    f"/guardians/home-ui/dashboard/student-id/{sid}?format=javascript"
+                )
+                entry["current_lesson"] = self._event(sdash, ("Current lesson", "Previous lesson"))
+                entry["next_lesson"] = self._event(sdash, ("Next lesson",))
+                entry["notices"] = self._notices(sdash)
+            except Exception as err:  # noqa: BLE001 - best effort per student
+                _LOGGER.debug("Arbor student %s dashboard failed: %s", sid, err)
+            try:
+                kdata = await self._get_json(f"/guardians/student/kpis/id/{sid}/")
+                entry.update(self._kpis(kdata))
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Arbor student %s kpis failed: %s", sid, err)
+            result["students"][sid] = entry
+        return result
+
+    # -- parsers ------------------------------------------------------------
 
     @staticmethod
-    def _extract(data) -> list[dict]:
-        found: list[dict] = []
+    def _accounts(dash) -> dict:
+        out: dict = {}
+        for node in _walk(
+            dash,
+            lambda n: isinstance(n.get("props"), dict)
+            and isinstance(n["props"].get("description"), str)
+            and "alance" in n["props"]["description"]
+            and "£" in n["props"]["description"],
+        ):
+            props = node["props"]
+            m = re.search(r"(-?)£\s*(-?)([\d,]+\.?\d*)", props["description"])
+            if not m:
+                continue
+            neg = "-" if (m.group(1) or m.group(2)) else ""
+            value = float(neg + m.group(3).replace(",", ""))
+            name = _strip(props.get("value"))
+            aid = None
+            mu = re.search(r"customer-account-id/(\d+)", str(props.get("url", "")))
+            if mu:
+                aid = mu.group(1)
+            if aid:
+                out[aid] = {"account_id": aid, "name": name, "balance": value}
+        return out
 
-        def walk(node) -> None:
-            if isinstance(node, dict):
-                props = node.get("props") or {}
-                desc = props.get("description")
-                if isinstance(desc, str) and "alance" in desc and "£" in desc:
-                    m = re.search(r"(-?)£\s*(-?)([\d,]+\.?\d*)", desc)
-                    if m:
-                        neg = "-" if (m.group(1) or m.group(2)) else ""
-                        value = float(neg + m.group(3).replace(",", ""))
-                        name = re.sub(r"<[^>]+>", "", str(props.get("value", ""))).strip()
-                        aid = None
-                        mu = re.search(r"customer-account-id/(\d+)", str(props.get("url", "")))
-                        if mu:
-                            aid = mu.group(1)
-                        found.append({"account_id": aid, "name": name, "balance": value})
-                for value in node.values():
-                    walk(value)
-            elif isinstance(node, list):
-                for value in node:
-                    walk(value)
+    @staticmethod
+    def _students(dash) -> dict:
+        out: dict = {}
+        for node in _walk(dash, lambda n: n.get("componentName") == "Arbor.selector.PageToggle"):
+            for opt in (node.get("props", {}) or {}).get("options", []) or []:
+                mu = re.search(r"student-id/(\d+)", str(opt.get("value", "")))
+                if mu:
+                    out[mu.group(1)] = opt.get("label") or mu.group(1)
+        return out
 
-        walk(data)
-        return found
+    @staticmethod
+    def _event(dash, titles) -> dict | None:
+        for node in _walk(
+            dash,
+            lambda n: n.get("componentName") == "Arbor.container.EventBoxSection"
+            and (n.get("props", {}) or {}).get("title") in titles,
+        ):
+            html = node.get("content")
+            if not isinstance(html, str):
+                continue
+            mb = re.search(r"<b>(.*?)</b>", html, re.S)
+            full = _strip(mb.group(1)) if mb else None
+            lines = [_strip(p) for p in re.split(r"</div>", html)]
+            lines = [ln for ln in lines if ln]
+            if not full and lines:
+                full = lines[2] if len(lines) > 2 else lines[0]
+            subject = (full.split(":")[0].strip() if full else None) or full
+            room = next((ln.split(":", 1)[1].strip() for ln in lines if ln.startswith("Room:")), None)
+            when = lines[0] if lines and re.match(r"\d{1,2}:\d{2}", lines[0]) else None
+            teacher = lines[-1] if lines and not lines[-1].startswith("Room:") else None
+            return {
+                "subject": subject,
+                "full": full,
+                "when": when,
+                "room": room,
+                "teacher": teacher,
+                "period": (node.get("props", {}) or {}).get("title"),
+                "detail": " | ".join(lines),
+            }
+        return None
+
+    @staticmethod
+    def _notices(dash) -> list:
+        out: list = []
+        for node in _walk(
+            dash,
+            lambda n: n.get("componentName") == "Arbor.container.Section"
+            and (n.get("props", {}) or {}).get("title") == "Notices",
+        ):
+            for row in node.get("content") or []:
+                if isinstance(row, dict):
+                    txt = _strip((row.get("props", {}) or {}).get("value"))
+                    if txt:
+                        out.append(txt)
+            break
+        return out
+
+    @staticmethod
+    def _kpis(kdata) -> dict:
+        out: dict = {}
+        for item in (kdata.get("items") or []):
+            fields = item.get("fields", {}) or {}
+            title = str((fields.get("title", {}) or {}).get("value", "")).lower()
+            html = (fields.get("html", {}) or {}).get("value", "")
+            m = re.search(r"measure-value[^>]*>\s*(-?\d+)", str(html))
+            if not m:
+                continue
+            val = int(m.group(1))
+            if "attendance" in title:
+                out["attendance"] = val
+            elif "positive points" in title:
+                out["positive_points"] = val
+            elif "positive behav" in title:
+                out["positive_incidents"] = val
+            elif "negative behav" in title:
+                out["negative_incidents"] = val
+            elif "neutral behav" in title:
+                out["neutral_incidents"] = val
+        return out
