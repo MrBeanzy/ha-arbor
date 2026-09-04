@@ -304,12 +304,14 @@ class ArborApi:
         return out
 
     async def _week_timetable(self, sid: str) -> dict:
-        """Fetch Mon-Fri of the current week, keyed by ISO date."""
+        """Fetch weekday timetables for this week and the next two, keyed by ISO date."""
         today = date.today()
         monday = today - timedelta(days=today.weekday())
         week: dict = {}
-        for offset in range(5):
+        for offset in range(21):  # three weeks
             day = monday + timedelta(days=offset)
+            if day.weekday() >= 5:  # skip Sat/Sun
+                continue
             ds = day.isoformat()
             try:
                 cal = await self._get_json(
