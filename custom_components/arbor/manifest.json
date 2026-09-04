@@ -1,7 +1,7 @@
 {
   "domain": "arbor",
   "name": "Arbor",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "config_flow": true,
   "documentation": "https://support.arbor-education.com",
   "iot_class": "cloud_polling",

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date, timedelta
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -153,6 +154,10 @@ class ArborApi:
                 entry["timetable"] = self._timetable(cal)
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("Arbor student %s timetable failed: %s", sid, err)
+            try:
+                entry["timetable_week"] = await self._week_timetable(sid)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Arbor student %s week timetable failed: %s", sid, err)
             result["students"][sid] = entry
         return result
 
@@ -297,6 +302,24 @@ class ArborApi:
             elif "neutral behav" in title:
                 out["neutral_incidents"] = val
         return out
+
+    async def _week_timetable(self, sid: str) -> dict:
+        """Fetch Mon-Fri of the current week, keyed by ISO date."""
+        today = date.today()
+        monday = today - timedelta(days=today.weekday())
+        week: dict = {}
+        for offset in range(5):
+            day = monday + timedelta(days=offset)
+            ds = day.isoformat()
+            try:
+                cal = await self._get_json(
+                    f"/guardians/widget-data/get-calendar-data/student-id/{sid}/date/{ds}/"
+                )
+                week[ds] = self._timetable(cal)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Arbor week timetable %s %s failed: %s", sid, ds, err)
+                week[ds] = []
+        return week
 
     @staticmethod
     def _timetable(cal) -> list:

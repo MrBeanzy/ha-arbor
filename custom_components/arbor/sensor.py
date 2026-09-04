@@ -164,7 +164,10 @@ class ArborTimetableSensor(_StudentBase):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return {"lessons": self._sdata().get("timetable") or []}
+        return {
+            "lessons": self._sdata().get("timetable") or [],
+            "week": self._sdata().get("timetable_week") or {},
+        }
 
 
 class ArborAssignmentsSensor(_StudentBase):
