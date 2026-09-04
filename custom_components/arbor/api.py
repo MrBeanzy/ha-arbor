@@ -26,6 +26,19 @@ def _strip(html) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", str(html or ""))).strip()
 
 
+def _clean_name(name: str) -> str:
+    """Tidy a till item name: proper-case ALL-CAPS/all-lower words, leave the rest."""
+    words = []
+    for word in name.split():
+        if any(ch.isdigit() for ch in word):
+            words.append(word)  # keep quantities like "x1", "2L"
+        elif word.isupper() or word.islower():
+            words.append(word.capitalize())
+        else:
+            words.append(word)
+    return " ".join(words) or name
+
+
 def _walk(node, match):
     """Yield every dict node in the tree for which match(node) is truthy."""
     if isinstance(node, dict):
@@ -289,8 +302,16 @@ class ArborApi:
             props = (node.get("props", {}) or {})
             label = _strip(props.get("fieldLabel"))
             val = str(props.get("value", ""))
-            if label and not label.lower().startswith("epos") and "0.00" in val:
-                items.append(label)
+            if not label or label.lower().startswith("epos") or "0.00" not in val:
+                continue
+            name, price = label, None
+            m = re.search(r"(£\s*)?(\d+(?:\.\d{1,2})?)\s*$", label)
+            if m:
+                name = label[: m.start()].strip(" -£")
+                num = float(m.group(2))
+                # £-prefixed or decimal => pounds; a bare whole number => pence
+                price = num if (m.group(1) or "." in m.group(2)) else round(num / 100.0, 2)
+            items.append({"name": _clean_name(name) if name else label, "price": price})
         return items
 
     @staticmethod
