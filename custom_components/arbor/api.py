@@ -12,6 +12,13 @@ _UA = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
+_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1
+    )
+}
+
 
 class ArborAuthError(Exception):
     """Login rejected."""
@@ -131,6 +138,7 @@ class ArborApi:
                 entry["current_lesson"] = self._event(sdash, ("Current lesson", "Previous lesson"))
                 entry["next_lesson"] = self._event(sdash, ("Next lesson",))
                 entry["notices"] = self._notices(sdash)
+                entry["assignments"] = self._assignments(sdash)
             except Exception as err:  # noqa: BLE001 - best effort per student
                 _LOGGER.debug("Arbor student %s dashboard failed: %s", sid, err)
             try:
@@ -230,6 +238,41 @@ class ArborApi:
                     if txt:
                         out.append(txt)
             break
+        return out
+
+    @staticmethod
+    def _assignments(dash) -> list:
+        out: list = []
+        for node in _walk(
+            dash,
+            lambda n: n.get("componentName") == "Arbor.container.Section"
+            and (n.get("props", {}) or {}).get("title") == "Assignments that are due",
+        ):
+            for row in node.get("content") or []:
+                if not isinstance(row, dict):
+                    continue
+                props = (row.get("props", {}) or {})
+                html = str(props.get("value", ""))
+                mb = re.search(r"<b>(.*?)</b>", html, re.S)
+                bold = _strip(mb.group(1)) if mb else ""
+                text = _strip(html)
+                md = re.search(r"Due\s+(\d{1,2})\s+(\w+)\s+(\d{4})", text)
+                if not md or not bold:
+                    continue  # skip the "View all assignments" link and empty rows
+                code, _, title = bold.partition(":")
+                day, mon, year = md.group(1), md.group(2), md.group(3)
+                due_iso = f"{year}-{_MONTHS[mon]:02d}-{int(day):02d}" if mon in _MONTHS else None
+                out.append(
+                    {
+                        "code": code.strip(),
+                        "title": title.strip() or code.strip(),
+                        "due": f"{int(day)} {mon} {year}",
+                        "due_date": due_iso,
+                        "status": _strip(props.get("description")),
+                    }
+                )
+            break  # only the first "Assignments that are due" section
+        out.sort(key=lambda a: a.get("due_date") or "9999-99-99")
         return out
 
     @staticmethod
