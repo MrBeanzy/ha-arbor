@@ -104,6 +104,11 @@ class ArborApi:
             raise
 
         result = {"accounts": self._accounts(dash), "students": {}}
+        for aid in list(result["accounts"].keys()):
+            try:
+                result["accounts"][aid]["week"] = await self._account_week(aid)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Arbor account %s week failed: %s", aid, err)
         for sid, sname in self._students(dash).items():
             entry: dict = {"name": sname}
             try:
@@ -259,3 +264,59 @@ class ArborApi:
                 }
             )
         return out
+
+    async def _account_week(self, aid: str) -> dict:
+        dash = await self._get_json(
+            f"/guardians/customer-account-ui/dashboard/customer-account-id/{aid}?format=javascript"
+        )
+        week = self._parse_week(dash)
+        for day in week["days"]:
+            if day["amount"] > 0 and day["date"]:
+                try:
+                    detail = await self._get_json(
+                        f"/guardians/customer-account-ui/view-payments-on-date/date/{day['date']}"
+                        f"/customer-account-id/{aid}?format=javascript"
+                    )
+                    day["items"] = self._payment_items(detail)
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Arbor payments %s %s failed: %s", aid, day["date"], err)
+        return week
+
+    @staticmethod
+    def _payment_items(detail) -> list:
+        items: list = []
+        for node in _walk(detail, lambda n: n.get("componentName") == "Arbor.container.PropertyRow"):
+            props = (node.get("props", {}) or {})
+            label = _strip(props.get("fieldLabel"))
+            val = str(props.get("value", ""))
+            if label and not label.lower().startswith("epos") and "0.00" in val:
+                items.append(label)
+        return items
+
+    @staticmethod
+    def _parse_week(dash) -> dict:
+        week: dict = {"start": None, "total": None, "days": []}
+        for node in _walk(
+            dash,
+            lambda n: n.get("componentName") == "Arbor.container.Section"
+            and str((n.get("props", {}) or {}).get("title", "")).startswith("Week beginning"),
+        ):
+            title = str(node["props"]["title"])
+            mt = re.search(r"Week beginning\s+(.+?):\s*£([\d.]+)", title)
+            if mt:
+                week["start"] = mt.group(1).strip()
+                week["total"] = float(mt.group(2))
+            for row in node.get("content") or []:
+                props = (row.get("props", {}) or {})
+                amt = re.search(r"£\s*([\d.]+)", str(props.get("value", "")))
+                md = re.search(r"date/(\d{4}-\d{2}-\d{2})", str(props.get("url", "")))
+                week["days"].append(
+                    {
+                        "day": props.get("fieldLabel"),
+                        "date": md.group(1) if md else None,
+                        "amount": float(amt.group(1)) if amt else 0.0,
+                        "items": [],
+                    }
+                )
+            break  # the first "Week beginning" section is the current week
+        return week

@@ -65,10 +65,15 @@ async def async_setup_entry(
                 new.append(ArborTimetableSensor(coordinator, sid, name))
 
         for aid, acc in (data.get("accounts", {}) or {}).items():
+            name = acc.get("name") or f"Account {aid}"
             uid = f"arbor_{aid}"
             if uid not in known:
                 known.add(uid)
-                new.append(ArborBalanceSensor(coordinator, aid, acc.get("name") or f"Account {aid}", students))
+                new.append(ArborBalanceSensor(coordinator, aid, name, students))
+            uid = f"arbor_{aid}_week"
+            if uid not in known:
+                known.add(uid)
+                new.append(ArborWeekSensor(coordinator, aid, name, students))
 
         if new:
             async_add_entities(new)
@@ -158,6 +163,14 @@ class ArborTimetableSensor(_StudentBase):
         return {"lessons": self._sdata().get("timetable") or []}
 
 
+def _account_device(name: str, students: dict) -> dict:
+    for sid, sdata in (students or {}).items():
+        sname = sdata.get("name") or ""
+        if sname and name.startswith(sname):
+            return _student_device(sid, sname)
+    return {"identifiers": {(DOMAIN, "arbor_accounts")}, "name": "Arbor", "manufacturer": "Arbor"}
+
+
 class ArborBalanceSensor(CoordinatorEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_native_unit_of_measurement = "GBP"
@@ -169,13 +182,7 @@ class ArborBalanceSensor(CoordinatorEntity, SensorEntity):
         self._aid = aid
         self._attr_unique_id = f"arbor_{aid}"
         self._attr_name = name
-        device = {"identifiers": {(DOMAIN, "arbor_accounts")}, "name": "Arbor", "manufacturer": "Arbor"}
-        for sid, sdata in (students or {}).items():
-            sname = sdata.get("name") or ""
-            if sname and name.startswith(sname):
-                device = _student_device(sid, sname)
-                break
-        self._attr_device_info = device
+        self._attr_device_info = _account_device(name, students)
 
     @property
     def native_value(self):
@@ -186,3 +193,29 @@ class ArborBalanceSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict:
         acc = ((self.coordinator.data or {}).get("accounts", {}) or {}).get(self._aid) or {}
         return {"account_id": self._aid, "account": acc.get("name")}
+
+
+class ArborWeekSensor(CoordinatorEntity, SensorEntity):
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "GBP"
+    _attr_icon = "mdi:cart-outline"
+
+    def __init__(self, coordinator, aid: str, name: str, students: dict) -> None:
+        super().__init__(coordinator)
+        self._aid = aid
+        self._attr_unique_id = f"arbor_{aid}_week"
+        self._attr_name = f"{name} This Week"
+        self._attr_device_info = _account_device(name, students)
+
+    def _week(self) -> dict:
+        acc = ((self.coordinator.data or {}).get("accounts", {}) or {}).get(self._aid) or {}
+        return acc.get("week") or {}
+
+    @property
+    def native_value(self):
+        return self._week().get("total")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        w = self._week()
+        return {"week_start": w.get("start"), "days": w.get("days") or []}
